@@ -1,0 +1,21 @@
+[build-system]
+requires = []
+build-backend = "release_backend"
+backend-path = ["tools"]
+
+[project]
+name = "pdx-runtime"
+version = "0.3.0"
+description = "Ordinary Python access to the PDX native runtime"
+requires-python = ">=3.11"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+pdx-runtime = "pdx_runtime.shell:main"
+
+[tool.pdx-release]
+platform = "win_amd64"
+sdk = "src/pdx_runtime"
+native = "build/native/Release/pdx_runtime.dll"

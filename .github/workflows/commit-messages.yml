@@ -1,0 +1,31 @@
+name: Commit messages
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  commit-messages:
+    name: Conventional Commits
+    if: github.event.deleted != true
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64
+      - name: Validator contracts (no SDK or game calls)
+        run: python -m unittest discover -s tests -p test_commit_messages.py -v
+      - name: Check only commits introduced by this event
+        shell: pwsh
+        run: python tools/check_commit_messages.py --event-file "$env:GITHUB_EVENT_PATH" --event-name "$env:GITHUB_EVENT_NAME" --sha "$env:GITHUB_SHA"

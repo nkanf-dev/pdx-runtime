@@ -1,0 +1,13 @@
+#!/bin/sh
+# Enable per clone with: git config --local core.hooksPath .githooks
+set -eu
+repo=$(git rev-parse --show-toplevel)
+if [ -x "$repo/.venv/Scripts/python.exe" ]; then
+    exec "$repo/.venv/Scripts/python.exe" "$repo/tools/check_commit_messages.py" --message-file "$1"
+elif [ -x "$repo/.venv/bin/python" ]; then
+    exec "$repo/.venv/bin/python" "$repo/tools/check_commit_messages.py" --message-file "$1"
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 "$repo/tools/check_commit_messages.py" --message-file "$1"
+else
+    exec python "$repo/tools/check_commit_messages.py" --message-file "$1"
+fi

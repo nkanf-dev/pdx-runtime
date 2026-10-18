@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv*/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+*.dll
+*.lib
+*.exp
+*.obj
+*.pdb
+*.exe
+*.idb
+*.i64
+*.dmp
+*.v3

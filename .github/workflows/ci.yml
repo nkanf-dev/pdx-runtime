@@ -1,0 +1,140 @@
+name: Windows x64 checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  cpu:
+    name: CPU / Python ${{ matrix.python }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src;${{ github.workspace }}\tests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - name: CPU contracts
+        run: python -m unittest discover -s tests -v
+      - name: Validate both Skills against the current SDK source
+        run: python tools/validate_agent_skills.py --skills skills --sdk-src src/pdx_runtime
+      - name: Skills validator self-tests
+        run: python tools/validate_agent_skills.py --self-test
+
+  owned-host:
+    name: Owned native hosts (not a game)
+    runs-on: windows-2022
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src;${{ github.workspace }}\tests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64
+      - name: Configure owned test hosts
+        run: cmake -S . -B build/owned-host -G "Visual Studio 17 2022" -A x64 -DPDX_BUILD_TEST_HOSTS=ON
+      - name: Build owned native test hosts
+        run: cmake --build build/owned-host --config Release --target pdx_regression_hosts --parallel
+      - name: Run owned-host regression without a game
+        run: python tools/run_owned_host_regression.py --bin-dir build/owned-host/Release --out build/owned-host/evidence.json --timeout 60
+      - name: Keep owned-host evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-host-evidence
+          path: build/owned-host/evidence.json
+          if-no-files-found: warn
+
+  release-package:
+    name: Build and inspect one-DLL distributions
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64
+      - name: Install the PEP 517 frontend
+        run: python -m pip install --disable-pip-version-check build==1.6.1 mypy==2.4.0
+      - name: Configure MSVC x64
+        run: cmake -S . -B build/native -G "Visual Studio 17 2022" -A x64
+      - name: Build only the Release DLL target
+        run: cmake --build build/native --config Release --target pdx_runtime --parallel
+      - name: Build wheel and portable ZIP
+        run: python tools/release_builder.py --repo . --out dist --native-dll build/native/Release/pdx_runtime.dll
+      - name: Build the same wheel through PEP 517
+        run: python -m build --wheel --outdir dist/pep517 --config-setting "native-dll=build/native/Release/pdx_runtime.dll"
+      - name: Check actual archive contents and reproducible wheel bytes
+        run: |
+          @'
+          from pathlib import Path
+          import zipfile
+          wheels = list(Path("dist").glob("*-py3-none-win_amd64.whl"))
+          pep517 = list(Path("dist/pep517").glob("*-py3-none-win_amd64.whl"))
+          portable = list(Path("dist").glob("*-win_amd64-portable.zip"))
+          assert len(wheels) == len(pep517) == len(portable) == 1
+          assert wheels[0].read_bytes() == pep517[0].read_bytes()
+          with zipfile.ZipFile(wheels[0]) as wheel, zipfile.ZipFile(portable[0]) as product:
+              payload = {name: wheel.read(name) for name in wheel.namelist() if ".dist-info/" not in name}
+              assert payload == {name: product.read(name) for name in product.namelist()}
+              assert [name for name in payload if name.lower().endswith(".dll")] == ["pdx_runtime/_native/pdx_runtime.dll"]
+          '@ | python -
+      - name: Create a clean installation environment
+        run: python -m venv .ci-installed
+      - name: Install the wheel without dependencies
+        run: |
+          $wheel = (Get-ChildItem dist -Filter '*-py3-none-win_amd64.whl' -File).FullName
+          .\.ci-installed\Scripts\python.exe -m pip install --no-deps $wheel
+      - name: Inspect the installed SDK and resource files without loading the DLL
+        run: |
+          @'
+          from importlib import metadata, resources
+          from pathlib import Path
+          import sys
+          import pdx_runtime
+          from pdx_runtime.session import RuntimeSession
+          from pdx_runtime.v3_game import V3Game
+          from pdx_runtime.native_bridge import NativeBridge
+          from pdx_runtime import v3_runtime
+          package = Path(pdx_runtime.__file__).resolve().parent
+          assert package.is_relative_to(Path(sys.prefix).resolve())
+          assert (package / "_native/pdx_runtime.dll").is_file()
+          assert callable(V3Game.attach) and callable(V3Game.launch)
+          assert callable(RuntimeSession.load) and callable(NativeBridge.load) and callable(v3_runtime.install)
+          for skill in ("pdx", "victoria3"):
+              assert resources.files("pdx_runtime").joinpath("skills", skill, "SKILL.md").is_file()
+          wheel = metadata.distribution("pdx-runtime").read_text("WHEEL")
+          assert "Root-Is-Purelib: false" in wheel and "Tag: py3-none-win_amd64" in wheel
+          print("Installed SDK, one DLL file and both Skills are present. No DLL or game calls were made.")
+          '@ | .\.ci-installed\Scripts\python.exe -I -
+      - name: Check installed research typing contract
+        env:
+          PYTHONPATH: ""
+          MYPYPATH: ""
+        run: python -m mypy --python-version 3.11 --follow-imports=silent --warn-unused-ignores --python-executable ".ci-installed/Scripts/python.exe" tests/typing/v3_research_contracts.py
+      - name: Installed runtime CLI help only
+        run: .\.ci-installed\Scripts\pdx-runtime.exe --help
